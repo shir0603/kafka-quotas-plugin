@@ -42,6 +42,7 @@ public class CachingVolumeObserver implements VolumeObserver {
     private final Logger log = getLogger(CachingVolumeObserver.class);
 
     /**
+     * Creates a new CachingVolumeObserver.
      * @param observer The downstream observer to be notified after processing
      * @param clock the clock to use for managing cache expiry
      * @param entriesValidFor how long cache valid entries for

@@ -6,6 +6,7 @@ package io.strimzi.kafka.quotas;
 
 import java.time.Duration;
 import java.time.format.DateTimeParseException;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -53,6 +54,47 @@ public class StaticQuotaConfig extends AbstractConfig {
     static final String THROTTLE_FALLBACK_VALIDITY_DURATION_PROP = CLIENT_QUOTA_CALLBACK_STATIC_PREFIX + ".throttle.factor.validity.duration";
     static final String ADMIN_BOOTSTRAP_SERVER_PROP = CLIENT_QUOTA_CALLBACK_STATIC_PREFIX + ".kafka.admin.bootstrap.servers";
     static final int STORAGE_CHECK_INTERVAL_DEFAULT = 60;
+
+    /**
+     * SSL property key for the Admin Client truststore location.
+     */
+    public static final String ADMIN_SSL_TRUSTSTORE_LOCATION_PROP =
+            CLIENT_QUOTA_CALLBACK_STATIC_PREFIX + ".kafka.admin.ssl.truststore.location";
+
+    /**
+     * SSL property key for the Admin Client truststore password.
+     */
+    public static final String ADMIN_SSL_TRUSTSTORE_PASSWORD_PROP =
+            CLIENT_QUOTA_CALLBACK_STATIC_PREFIX + ".kafka.admin.ssl.truststore.password";
+
+    /**
+     * SSL property key for the Admin Client keystore location.
+     */
+    public static final String ADMIN_SSL_KEYSTORE_LOCATION_PROP =
+            CLIENT_QUOTA_CALLBACK_STATIC_PREFIX + ".kafka.admin.ssl.keystore.location";
+
+    /**
+     * SSL property key for the Admin Client keystore password.
+     */
+    public static final String ADMIN_SSL_KEYSTORE_PASSWORD_PROP =
+            CLIENT_QUOTA_CALLBACK_STATIC_PREFIX + ".kafka.admin.ssl.keystore.password";
+
+    /**
+     * SSL property key for the Admin Client key password.
+     */
+    public static final String ADMIN_SSL_KEY_PASSWORD_PROP =
+            CLIENT_QUOTA_CALLBACK_STATIC_PREFIX + ".kafka.admin.ssl.key.password";
+
+    /**
+     * The set of SSL configuration keys dynamically reconfigurable via kafka-configs.sh.
+     */
+    public static final Set<String> RECONFIGURABLE_SSL_CONFIGS = Collections.unmodifiableSet(Set.of(
+            ADMIN_SSL_TRUSTSTORE_LOCATION_PROP,
+            ADMIN_SSL_TRUSTSTORE_PASSWORD_PROP,
+            ADMIN_SSL_KEYSTORE_LOCATION_PROP,
+            ADMIN_SSL_KEYSTORE_PASSWORD_PROP,
+            ADMIN_SSL_KEY_PASSWORD_PROP
+    ));
 
     private final KafkaClientConfig kafkaClientConfig;
     private final boolean supportsKip827;

@@ -86,6 +86,7 @@ public class VolumeUsage {
     }
 
     /**
+     * When the volume usage was observed.
      * @return An instant marking when the observation was recorded by the observing broker
      */
     public Instant getObservedAt() {

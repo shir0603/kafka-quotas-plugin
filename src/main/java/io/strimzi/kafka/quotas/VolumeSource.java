@@ -20,6 +20,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -49,7 +50,7 @@ import static java.util.stream.Collectors.toSet;
 public class VolumeSource implements Runnable {
 
     private final VolumeObserver volumeObserver;
-    private final Admin admin;
+    private final Supplier<Admin> adminSupplier;
     private final int timeout;
     private final TimeUnit timeoutUnit;
     private final LinkedHashMap<String, String> defaultTags;
@@ -66,16 +67,16 @@ public class VolumeSource implements Runnable {
     /**
      * Creates a volume source.
      *
-     * @param admin          The Kafka Admin client to be used for gathering information.
+     * @param adminSupplier  A supplier providing the current Kafka Admin client instance.
      * @param volumeObserver the listener to be notified of the volume usage
      * @param timeout        how long should we wait for cluster information
      * @param timeoutUnit    What unit is the timeout configured in
      * @param defaultTags    The minimum collection of tags to add each metric.
      */
     @SuppressFBWarnings(value = "EI_EXPOSE_REP2", justification = "Injecting the dependency is the right move as it can be shared")
-    public VolumeSource(Admin admin, VolumeObserver volumeObserver, int timeout, TimeUnit timeoutUnit, LinkedHashMap<String, String> defaultTags) {
+    public VolumeSource(Supplier<Admin> adminSupplier, VolumeObserver volumeObserver, int timeout, TimeUnit timeoutUnit, LinkedHashMap<String, String> defaultTags) {
         this.volumeObserver = volumeObserver;
-        this.admin = admin;
+        this.adminSupplier = adminSupplier;
         this.timeout = timeout;
         this.timeoutUnit = timeoutUnit;
         this.defaultTags = defaultTags;
@@ -87,9 +88,10 @@ public class VolumeSource implements Runnable {
     public void run() {
         try {
             log.info("Updating cluster volume usage.");
+            final Admin admin = adminSupplier.get();
             CompletableFuture<VolumeUsageResult> volumeUsagePromise = toResultStage(admin.describeCluster().nodes())
                     //Stay on the thread completing the future (probably the adminClient's thread) as the next thing we do is another admin API call
-                    .thenCompose(this::onDescribeClusterComplete)
+                    .thenCompose(result -> onDescribeClusterComplete(admin, result))
                     .toCompletableFuture();
 
             //Bring it back to the original thread to do the actual work of the plug-in.
@@ -129,15 +131,15 @@ public class VolumeSource implements Runnable {
         volumeObserver.observeVolumeUsage(result);
     }
 
-    private CompletionStage<VolumeUsageResult> onDescribeClusterComplete(Result<Collection<Node>> result) {
+    private CompletionStage<VolumeUsageResult> onDescribeClusterComplete(Admin admin, Result<Collection<Node>> result) {
         if (result.isFailure()) {
             return CompletableFuture.completedFuture(failure(VolumeSourceObservationStatus.DESCRIBE_CLUSTER_ERROR, result.getThrowable()));
         } else {
-            return onDescribeClusterSuccess(result.getValue());
+            return onDescribeClusterSuccess(admin, result.getValue());
         }
     }
 
-    private CompletionStage<VolumeUsageResult> onDescribeClusterSuccess(Collection<Node> nodes) {
+    private CompletionStage<VolumeUsageResult> onDescribeClusterSuccess(Admin admin, Collection<Node> nodes) {
         final Set<Integer> allBrokerIds = nodes.stream().map(Node::id).collect(toSet());
         activeBrokerCount.set(allBrokerIds.size());
         allBrokerIds.forEach(brokerId -> {

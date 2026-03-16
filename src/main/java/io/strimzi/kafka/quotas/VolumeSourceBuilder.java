@@ -6,11 +6,10 @@ package io.strimzi.kafka.quotas;
 
 import java.util.LinkedHashMap;
 import java.util.concurrent.TimeUnit;
-import java.util.function.Function;
+import java.util.function.Supplier;
 
 import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
 import org.apache.kafka.clients.admin.Admin;
-import org.apache.kafka.clients.admin.AdminClient;
 
 /**
  * A fluent builder which ensures the <a href="https://cwiki.apache.org/confluence/display/KAFKA/KIP-827%3A+Expose+log+dirs+total+and+usable+space+via+Kafka+API">KIP-827 API</a> is available and will throw exceptions if not.
@@ -19,27 +18,26 @@ import org.apache.kafka.clients.admin.AdminClient;
  */
 public class VolumeSourceBuilder implements AutoCloseable {
 
-    private final Function<StaticQuotaConfig.KafkaClientConfig, Admin> adminClientFactory;
-    private Admin adminClient;
+    private Supplier<Admin> adminSupplier;
     private StaticQuotaConfig config;
     private VolumeObserver volumeObserver;
     private LinkedHashMap<String, String> defaultTags = new LinkedHashMap<>();
 
     /**
      * Default production constructor for production usage.
-     * Which will lazily create a Kafka admin client using the supplied config.
      */
-    @SuppressFBWarnings("MC_OVERRIDABLE_METHOD_CALL_IN_CONSTRUCTOR") //false positive we are just passing the method reference
     public VolumeSourceBuilder() {
-        this(kafkaClientConfig -> AdminClient.create(kafkaClientConfig.getKafkaClientConfig()));
     }
 
     /**
-     * Secondary constructor visible for testing.
-     * @param adminClientFactory factory function for creating Admin clients with the builders' config.
+     * Provide the builder with a supplier of Admin clients.
+     * The supplier is called on each scheduled volume check to obtain the current Admin client.
+     * @param adminSupplier a supplier that returns the current Admin client instance.
+     * @return this to allow fluent usage of the builder.
      */
-    /* test */ VolumeSourceBuilder(Function<StaticQuotaConfig.KafkaClientConfig, Admin> adminClientFactory) {
-        this.adminClientFactory = adminClientFactory;
+    public VolumeSourceBuilder withAdminSupplier(Supplier<Admin> adminSupplier) {
+        this.adminSupplier = adminSupplier;
+        return this;
     }
 
     /**
@@ -77,17 +75,17 @@ public class VolumeSourceBuilder implements AutoCloseable {
         if (!config.isSupportsKip827()) {
             throw new IllegalStateException("KIP-827 not available, this plugin requires broker version >= 3.3");
         }
-        adminClient = adminClientFactory.apply(config.getKafkaClientConfig());
+        if (adminSupplier == null) {
+            throw new IllegalStateException("Admin supplier must be set before building");
+        }
         //Timeout just before the next job will be scheduled to run to avoid tasks queuing on the client thread pool.
         final int timeout = config.getStorageCheckInterval() - 1;
-        return new VolumeSource(adminClient, volumeObserver, timeout, TimeUnit.SECONDS, defaultTags);
+        return new VolumeSource(adminSupplier, volumeObserver, timeout, TimeUnit.SECONDS, defaultTags);
     }
 
     @Override
     public void close() {
-        if (adminClient != null) {
-            adminClient.close();
-        }
+        // Admin lifecycle is now managed externally by StaticQuotaCallback
     }
 
 }

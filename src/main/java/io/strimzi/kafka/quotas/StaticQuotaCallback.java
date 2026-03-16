@@ -4,7 +4,9 @@
  */
 package io.strimzi.kafka.quotas;
 
+import java.io.File;
 import java.time.Clock;
+import java.time.Duration;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -12,9 +14,12 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 import com.yammer.metrics.Metrics;
@@ -28,7 +33,11 @@ import io.strimzi.kafka.quotas.throttle.ThrottleFactor;
 import io.strimzi.kafka.quotas.throttle.ThrottleFactorPolicy;
 import io.strimzi.kafka.quotas.throttle.ThrottleFactorSource;
 import io.strimzi.kafka.quotas.throttle.UnlimitedThrottleFactorSource;
+import org.apache.kafka.clients.admin.Admin;
+import org.apache.kafka.clients.admin.AdminClient;
 import org.apache.kafka.common.Cluster;
+import org.apache.kafka.common.Reconfigurable;
+import org.apache.kafka.common.config.ConfigException;
 import org.apache.kafka.common.metrics.Quota;
 import org.apache.kafka.common.security.auth.KafkaPrincipal;
 import org.apache.kafka.server.quota.ClientQuotaCallback;
@@ -41,8 +50,11 @@ import static java.util.Locale.ENGLISH;
 
 /**
  * Allows configuring generic quotas for a broker independent of users and clients.
+ * <p>
+ * Implements {@link Reconfigurable} to support dynamic SSL certificate reloading
+ * via {@code kafka-configs.sh} without requiring a broker restart.
  */
-public class StaticQuotaCallback implements ClientQuotaCallback {
+public class StaticQuotaCallback implements ClientQuotaCallback, Reconfigurable {
     /**
      * Tag used for metrics to identify the broker which generated the observation.
      */
@@ -69,6 +81,11 @@ public class StaticQuotaCallback implements ClientQuotaCallback {
      */
     public static final String HOST_BROKER_TAG = "observingBrokerId";
 
+    // --- Dynamic SSL reconfiguration fields ---
+    private final AtomicReference<Admin> adminClientRef = new AtomicReference<>();
+    private final ExecutorService adminCleanupExecutor;
+    private final Function<Map<String, Object>, Admin> adminClientFactory;
+    private volatile Map<String, Object> currentConfigs = new HashMap<>();
 
     /**
      * Default constructor for production use.
@@ -82,7 +99,8 @@ public class StaticQuotaCallback implements ClientQuotaCallback {
                     thread.setDaemon(true);
                     return thread;
                 }),
-                Clock.systemUTC());
+                Clock.systemUTC(),
+                AdminClient::create);
     }
 
     /**
@@ -95,10 +113,31 @@ public class StaticQuotaCallback implements ClientQuotaCallback {
     /*test*/ StaticQuotaCallback(VolumeSourceBuilder volumeSourceBuilder,
                                  ScheduledExecutorService backgroundScheduler,
                                  Clock clock) {
+        this(volumeSourceBuilder, backgroundScheduler, clock, AdminClient::create);
+    }
+
+    /**
+     * Tertiary constructor visible for testing purposes, with injectable admin client factory.
+     *
+     * @param volumeSourceBuilder the builder to use
+     * @param backgroundScheduler the scheduler for executing background tasks.
+     * @param clock the time source to use when evaluating expiry
+     * @param adminClientFactory factory function for creating Admin clients
+     */
+    /*test*/ StaticQuotaCallback(VolumeSourceBuilder volumeSourceBuilder,
+                                 ScheduledExecutorService backgroundScheduler,
+                                 Clock clock,
+                                 Function<Map<String, Object>, Admin> adminClientFactory) {
         this.volumeSourceBuilder = volumeSourceBuilder;
         this.backgroundScheduler = backgroundScheduler;
         Collections.addAll(resetQuota, ClientQuotaType.values());
         this.clock = clock;
+        this.adminClientFactory = adminClientFactory;
+        this.adminCleanupExecutor = Executors.newSingleThreadExecutor(r -> {
+            final Thread thread = new Thread(r, StaticQuotaCallback.class.getSimpleName() + "-adminCleanup");
+            thread.setDaemon(true);
+            return thread;
+        });
     }
 
     @Override
@@ -149,6 +188,8 @@ public class StaticQuotaCallback implements ClientQuotaCallback {
     public void close() {
         try {
             closeExecutorService();
+            closeAdminCleanupExecutor();
+            closeAdminClient();
             volumeSourceBuilder.close();
         } finally {
             Metrics.defaultRegistry().allMetrics().keySet().stream().filter(m -> SCOPE.equals(m.getScope())).forEach(Metrics.defaultRegistry()::removeMetric);
@@ -157,6 +198,11 @@ public class StaticQuotaCallback implements ClientQuotaCallback {
 
     @Override
     public void configure(Map<String, ?> configs) {
+        // Store the full config for reconfiguration merging later
+        @SuppressWarnings("unchecked")
+        Map<String, Object> configsCopy = new HashMap<>((Map<String, Object>) configs);
+        this.currentConfigs = configsCopy;
+
         StaticQuotaConfig config = new StaticQuotaConfig(configs, true);
         quotaMap = config.getQuotaMap();
         long storageCheckInterval = config.getStorageCheckInterval();
@@ -164,6 +210,14 @@ public class StaticQuotaCallback implements ClientQuotaCallback {
             final Optional<Long> availableBytesLimitConfig = config.getAvailableBytesLimit();
             final Optional<Double> availableRatioLimit = config.getAvailableRatioLimit();
             if (availableBytesLimitConfig.isPresent() || availableRatioLimit.isPresent()) {
+                // Create initial Admin Client and store in AtomicReference
+                Map<String, Object> adminConfig = config.getKafkaClientConfig().getKafkaClientConfig();
+                Admin initialAdmin = adminClientFactory.apply(adminConfig);
+                adminClientRef.set(initialAdmin);
+
+                // Wire the builder with a supplier that reads from the AtomicReference
+                volumeSourceBuilder.withAdminSupplier(adminClientRef::get);
+
                 scheduleStorageCheck(config, availableBytesLimitConfig, availableRatioLimit, storageCheckInterval);
             } else {
                 log.info("No volume size limits configured, storage check disabled");
@@ -180,6 +234,89 @@ public class StaticQuotaCallback implements ClientQuotaCallback {
             String name = clientQuotaType.name().toUpperCase(ENGLISH).charAt(0) + clientQuotaType.name().toLowerCase(ENGLISH).substring(1);
             Metrics.newGauge(metricName(StaticQuotaCallback.class, name), new ClientQuotaGauge(quota));
         });
+    }
+
+    // --- Reconfigurable interface implementation ---
+
+    @Override
+    public Set<String> reconfigurableConfigs() {
+        return StaticQuotaConfig.RECONFIGURABLE_SSL_CONFIGS;
+    }
+
+    @Override
+    public void validateReconfiguration(Map<String, ?> configs) throws ConfigException {
+        validateFilePathIfPresent(configs, StaticQuotaConfig.ADMIN_SSL_TRUSTSTORE_LOCATION_PROP);
+        validateFilePathIfPresent(configs, StaticQuotaConfig.ADMIN_SSL_KEYSTORE_LOCATION_PROP);
+    }
+
+    @Override
+    public void reconfigure(Map<String, ?> configs) {
+        try {
+            log.info("Reconfiguring Admin Client with updated SSL certificates");
+
+            // Merge new configs into the stored full config
+            Map<String, Object> mergedConfigs = new HashMap<>(currentConfigs);
+            for (Map.Entry<String, ?> entry : configs.entrySet()) {
+                mergedConfigs.put(entry.getKey(), entry.getValue());
+            }
+
+            // Build Admin Client config from merged configuration
+            StaticQuotaConfig newConfig = new StaticQuotaConfig(mergedConfigs, false);
+            Map<String, Object> adminConfig = newConfig.getKafkaClientConfig().getKafkaClientConfig();
+
+            // Create new Admin Client
+            Admin newAdmin = adminClientFactory.apply(adminConfig);
+
+            // Verify the new Admin Client can actually connect (forces TLS handshake).
+            // AdminClient.create() is lazy — without this check, a client with invalid
+            // certs would be swapped in and every subsequent VolumeSource.run() would fail.
+            try {
+                newAdmin.describeCluster().clusterId().get(30, TimeUnit.SECONDS);
+            } catch (Exception verifyEx) {
+                log.error("New Admin Client failed TLS/connection verification, keeping existing client: {}", verifyEx.getMessage(), verifyEx);
+                try {
+                    newAdmin.close(Duration.ofSeconds(5));
+                } catch (Exception closeEx) {
+                    log.warn("Error closing unverified Admin Client: {}", closeEx.getMessage(), closeEx);
+                }
+                return;
+            }
+
+            // Verification passed — commit the config change and swap atomically
+            this.currentConfigs = mergedConfigs;
+            Admin oldAdmin = adminClientRef.getAndSet(newAdmin);
+
+            // Schedule background close of the old Admin Client to prevent resource leaks
+            if (oldAdmin != null) {
+                adminCleanupExecutor.submit(() -> {
+                    try {
+                        oldAdmin.close(Duration.ofSeconds(30));
+                        log.info("Successfully closed old Admin Client after reconfiguration");
+                    } catch (Exception e) {
+                        log.warn("Error closing old Admin Client: {}", e.getMessage(), e);
+                    }
+                });
+            }
+
+            log.info("Admin Client reconfigured successfully with updated SSL certificates");
+        } catch (Exception e) {
+            log.error("Failed to reconfigure Admin Client, keeping existing client: {}", e.getMessage(), e);
+            // Do NOT propagate the exception — keep old client active, do not crash the broker
+        }
+    }
+
+    // --- Private helpers ---
+
+    private void validateFilePathIfPresent(Map<String, ?> configs, String configKey) throws ConfigException {
+        Object value = configs.get(configKey);
+        if (value != null) {
+            String path = value.toString();
+            File file = new File(path);
+            if (!file.exists() || !file.canRead()) {
+                throw new ConfigException(configKey, path,
+                        "The file does not exist or is not readable: " + path);
+            }
+        }
     }
 
     private void scheduleStorageCheck(StaticQuotaConfig config, Optional<Long> availableBytesLimitConfig, Optional<Double> availableRatioLimit, long storageCheckInterval) {
@@ -212,6 +349,25 @@ public class StaticQuotaCallback implements ClientQuotaCallback {
             backgroundScheduler.shutdownNow();
         } catch (Exception e) {
             log.warn("Encountered problem shutting down background executor: {}", e.getMessage(), e);
+        }
+    }
+
+    private void closeAdminCleanupExecutor() {
+        try {
+            adminCleanupExecutor.shutdownNow();
+        } catch (Exception e) {
+            log.warn("Encountered problem shutting down admin cleanup executor: {}", e.getMessage(), e);
+        }
+    }
+
+    private void closeAdminClient() {
+        Admin admin = adminClientRef.getAndSet(null);
+        if (admin != null) {
+            try {
+                admin.close(Duration.ofSeconds(10));
+            } catch (Exception e) {
+                log.warn("Encountered problem closing admin client: {}", e.getMessage(), e);
+            }
         }
     }
 
@@ -279,6 +435,14 @@ public class StaticQuotaCallback implements ClientQuotaCallback {
         return name.replaceAll("[:?*=,]", "")
                 .replaceAll("//", "") // Double slashes are reserved as a protocol specifier
                 .replaceAll("\\$$", ""); // $ is only illegal as a trailing character as it is used to denote inner classes.
+    }
+
+    /**
+     * Returns the current Admin Client reference, visible for testing.
+     * @return the AtomicReference holding the live Admin Client
+     */
+    /*test*/ AtomicReference<Admin> getAdminClientRef() {
+        return adminClientRef;
     }
 
     private static class ClientQuotaGauge extends Gauge<Double> {

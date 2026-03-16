@@ -17,6 +17,7 @@ import java.util.concurrent.TimeUnit;
 
 import com.yammer.metrics.core.Metric;
 import com.yammer.metrics.core.MetricName;
+import org.apache.kafka.clients.admin.Admin;
 import org.apache.kafka.common.config.ConfigException;
 import org.apache.kafka.common.security.auth.KafkaPrincipal;
 import org.apache.kafka.server.quota.ClientQuotaType;
@@ -78,6 +79,7 @@ class StaticQuotaCallbackTest {
         when(volumeSourceBuilder.withConfig(any())).thenReturn(volumeSourceBuilder);
         when(volumeSourceBuilder.withVolumeObserver(any())).thenReturn(volumeSourceBuilder);
         when(volumeSourceBuilder.withDefaultTags(any())).thenReturn(volumeSourceBuilder);
+        when(volumeSourceBuilder.withAdminSupplier(any())).thenReturn(volumeSourceBuilder);
         when(volumeSourceBuilder.build()).thenReturn(Mockito.mock(VolumeSource.class));
     }
 
@@ -120,8 +122,9 @@ class StaticQuotaCallbackTest {
         //Given
         ArgumentCaptor<VolumeObserver> argument = ArgumentCaptor.forClass(VolumeObserver.class);
         when(volumeSourceBuilder.withVolumeObserver(argument.capture())).thenReturn(volumeSourceBuilder);
+        Admin mockAdmin = mock(Admin.class);
 
-        StaticQuotaCallback quotaCallback = new StaticQuotaCallback(volumeSourceBuilder, backgroundScheduler, Clock.systemUTC());
+        StaticQuotaCallback quotaCallback = new StaticQuotaCallback(volumeSourceBuilder, backgroundScheduler, Clock.systemUTC(), configs -> mockAdmin);
 
         quotaCallback.configure(Map.of(
                 StaticQuotaConfig.AVAILABLE_BYTES_PROP, "15",
@@ -143,8 +146,9 @@ class StaticQuotaCallbackTest {
         //Given
         ArgumentCaptor<VolumeObserver> argument = ArgumentCaptor.forClass(VolumeObserver.class);
         when(volumeSourceBuilder.withVolumeObserver(argument.capture())).thenReturn(volumeSourceBuilder);
+        Admin mockAdmin = mock(Admin.class);
 
-        StaticQuotaCallback quotaCallback = new StaticQuotaCallback(volumeSourceBuilder, backgroundScheduler, Clock.systemUTC());
+        StaticQuotaCallback quotaCallback = new StaticQuotaCallback(volumeSourceBuilder, backgroundScheduler, Clock.systemUTC(), configs -> mockAdmin);
 
         quotaCallback.configure(Map.of(
                 StaticQuotaConfig.AVAILABLE_RATIO_PROP, "0.5",
@@ -164,7 +168,8 @@ class StaticQuotaCallbackTest {
     @Test
     void configuringCheckIntervalWithNoVolumeLimitsDisablesStorageCheck() {
         ScheduledExecutorService executor = mock(ScheduledExecutorService.class);
-        StaticQuotaCallback quotaCallback = new StaticQuotaCallback(volumeSourceBuilder, executor, Clock.systemUTC());
+        Admin mockAdmin = mock(Admin.class);
+        StaticQuotaCallback quotaCallback = new StaticQuotaCallback(volumeSourceBuilder, executor, Clock.systemUTC(), configs -> mockAdmin);
 
         quotaCallback.configure(Map.of(
                 StaticQuotaConfig.STORAGE_CHECK_INTERVAL_PROP, "10",
@@ -181,8 +186,9 @@ class StaticQuotaCallbackTest {
         //Given
         ArgumentCaptor<VolumeObserver> argument = ArgumentCaptor.forClass(VolumeObserver.class);
         when(volumeSourceBuilder.withVolumeObserver(argument.capture())).thenReturn(volumeSourceBuilder);
+        Admin mockAdmin = mock(Admin.class);
 
-        StaticQuotaCallback quotaCallback = new StaticQuotaCallback(volumeSourceBuilder, backgroundScheduler, Clock.systemUTC());
+        StaticQuotaCallback quotaCallback = new StaticQuotaCallback(volumeSourceBuilder, backgroundScheduler, Clock.systemUTC(), configs -> mockAdmin);
 
         //Then
         assertThrows(IllegalStateException.class, () -> quotaCallback.configure(Map.of(
@@ -231,7 +237,8 @@ class StaticQuotaCallbackTest {
     void shouldScheduleStorageChecker() {
         //Given
         ScheduledExecutorService scheduledExecutorService = mock(ScheduledExecutorService.class);
-        StaticQuotaCallback target = new StaticQuotaCallback(volumeSourceBuilder, scheduledExecutorService, Clock.systemUTC());
+        Admin mockAdmin = mock(Admin.class);
+        StaticQuotaCallback target = new StaticQuotaCallback(volumeSourceBuilder, scheduledExecutorService, Clock.systemUTC(), configs -> mockAdmin);
 
         //When
         target.configure(MINIMUM_EXECUTABLE_CONFIG);
@@ -245,7 +252,8 @@ class StaticQuotaCallbackTest {
     void shouldNotScheduleStorageCheckWhenCheckIntervalIsZero() {
         //Given
         ScheduledExecutorService scheduledExecutorService = mock(ScheduledExecutorService.class);
-        StaticQuotaCallback target = new StaticQuotaCallback(volumeSourceBuilder, scheduledExecutorService, Clock.systemUTC());
+        Admin mockAdmin = mock(Admin.class);
+        StaticQuotaCallback target = new StaticQuotaCallback(volumeSourceBuilder, scheduledExecutorService, Clock.systemUTC(), configs -> mockAdmin);
 
         //When
         target.configure(Map.of(StaticQuotaConfig.STORAGE_CHECK_INTERVAL_PROP, "0", StaticQuotaConfig.ADMIN_BOOTSTRAP_SERVER_PROP, "localhost:9092"));
@@ -258,7 +266,8 @@ class StaticQuotaCallbackTest {
     void shouldShutdownExecutorOnClose() {
         //Given
         ScheduledExecutorService scheduledExecutorService = mock(ScheduledExecutorService.class);
-        StaticQuotaCallback target = new StaticQuotaCallback(volumeSourceBuilder, scheduledExecutorService, Clock.systemUTC());
+        Admin mockAdmin = mock(Admin.class);
+        StaticQuotaCallback target = new StaticQuotaCallback(volumeSourceBuilder, scheduledExecutorService, Clock.systemUTC(), configs -> mockAdmin);
         target.configure(MINIMUM_EXECUTABLE_CONFIG);
 
         //When
@@ -274,7 +283,8 @@ class StaticQuotaCallbackTest {
         ArgumentCaptor<VolumeObserver> argument = ArgumentCaptor.forClass(VolumeObserver.class);
         when(volumeSourceBuilder.withVolumeObserver(argument.capture())).thenReturn(volumeSourceBuilder);
         TickableClock clock = new TickableClock();
-        StaticQuotaCallback quotaCallback = new StaticQuotaCallback(volumeSourceBuilder, backgroundScheduler, clock);
+        Admin mockAdmin = mock(Admin.class);
+        StaticQuotaCallback quotaCallback = new StaticQuotaCallback(volumeSourceBuilder, backgroundScheduler, clock, configs -> mockAdmin);
         quotaCallback.configure(MINIMUM_EXECUTABLE_CONFIG);
         VolumeObserver volumeObserver = argument.getValue();
         quotaCallback.updateClusterMetadata(null);
@@ -298,7 +308,8 @@ class StaticQuotaCallbackTest {
         ArgumentCaptor<VolumeObserver> argument = ArgumentCaptor.forClass(VolumeObserver.class);
         when(volumeSourceBuilder.withVolumeObserver(argument.capture())).thenReturn(volumeSourceBuilder);
         TickableClock clock = new TickableClock();
-        StaticQuotaCallback quotaCallback = new StaticQuotaCallback(volumeSourceBuilder, backgroundScheduler, clock);
+        Admin mockAdmin = mock(Admin.class);
+        StaticQuotaCallback quotaCallback = new StaticQuotaCallback(volumeSourceBuilder, backgroundScheduler, clock, configs -> mockAdmin);
         quotaCallback.configure(MINIMUM_EXECUTABLE_CONFIG);
         VolumeObserver volumeObserver = argument.getValue();
         quotaCallback.updateClusterMetadata(null);
@@ -320,7 +331,8 @@ class StaticQuotaCallbackTest {
     void quotaResetRequiredShouldRespectQuotaType() {
         ArgumentCaptor<VolumeObserver> argument = ArgumentCaptor.forClass(VolumeObserver.class);
         when(volumeSourceBuilder.withVolumeObserver(argument.capture())).thenReturn(volumeSourceBuilder);
-        StaticQuotaCallback quotaCallback = new StaticQuotaCallback(volumeSourceBuilder, backgroundScheduler, Clock.systemUTC());
+        Admin mockAdmin = mock(Admin.class);
+        StaticQuotaCallback quotaCallback = new StaticQuotaCallback(volumeSourceBuilder, backgroundScheduler, Clock.systemUTC(), configs -> mockAdmin);
         quotaCallback.configure(MINIMUM_EXECUTABLE_CONFIG);
         VolumeObserver volumeObserver = argument.getValue();
         quotaCallback.updateClusterMetadata(null);
@@ -345,7 +357,8 @@ class StaticQuotaCallbackTest {
     void quotaResetRequired() {
         ArgumentCaptor<VolumeObserver> argument = ArgumentCaptor.forClass(VolumeObserver.class);
         when(volumeSourceBuilder.withVolumeObserver(argument.capture())).thenReturn(volumeSourceBuilder);
-        StaticQuotaCallback quotaCallback = new StaticQuotaCallback(volumeSourceBuilder, backgroundScheduler, Clock.systemUTC());
+        Admin mockAdmin = mock(Admin.class);
+        StaticQuotaCallback quotaCallback = new StaticQuotaCallback(volumeSourceBuilder, backgroundScheduler, Clock.systemUTC(), configs -> mockAdmin);
         quotaCallback.configure(MINIMUM_EXECUTABLE_CONFIG);
         VolumeObserver volumeObserver = argument.getValue();
         quotaCallback.updateClusterMetadata(null);

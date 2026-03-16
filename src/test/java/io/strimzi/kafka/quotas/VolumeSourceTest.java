@@ -75,30 +75,30 @@ class VolumeSourceTest {
         capturingVolumeObserver = new CapturingVolumeObserver();
         final LinkedHashMap<String, String> tags = new LinkedHashMap<>();
         tags.put(HOST_BROKER_TAG, LOCAL_NODE_ID);
-        volumeSource = new VolumeSource(admin, capturingVolumeObserver, 0, TimeUnit.SECONDS, tags);
+        volumeSource = new VolumeSource(() -> admin, capturingVolumeObserver, 0, TimeUnit.SECONDS, tags);
         when(describeClusterResult.nodes()).thenReturn(KafkaFuture.completedFuture(nodes));
         when(admin.describeCluster()).thenReturn(describeClusterResult);
         when(describeLogDirsResult.allDescriptions()).thenReturn(KafkaFuture.completedFuture(descriptions));
-        lenient().when(admin.describeLogDirs(argThat(integers ->
-                        integers.equals(nodes.stream().map(Node::id).collect(Collectors.toSet())))))
+        lenient()
+                .when(admin.describeLogDirs(
+                        argThat(integers -> integers.equals(nodes.stream().map(Node::id).collect(Collectors.toSet())))))
                 .thenReturn(describeLogDirsResult);
     }
 
     @Test
     void shouldProduceFailedObservationIfDescribeClusterFails() {
-        //Given
+        // Given
         final KafkaFutureImpl<Collection<Node>> kafkaFuture = new KafkaFutureImpl<>();
         kafkaFuture.completeExceptionally(new RuntimeException("boom"));
         when(describeClusterResult.nodes()).thenReturn(kafkaFuture);
 
-        //When
+        // When
         volumeSource.run();
 
-        //Then
+        // Then
         final List<VolumeUsageResult> results = capturingVolumeObserver.getActualResults();
         assertVolumeUsageStatus(results, VolumeSourceObservationStatus.DESCRIBE_CLUSTER_ERROR);
     }
-
 
     @Test
     void shouldProduceFailedObservationIfDescribeClusterThrows() {
@@ -113,141 +113,141 @@ class VolumeSourceTest {
         assertVolumeUsageStatus(results, VolumeSourceObservationStatus.EXCEPTION);
     }
 
-
     @Test
     void shouldProduceFailedObservationOnDescribeClusterTimeout() {
-        //Given
+        // Given
         final KafkaFutureImpl<Collection<Node>> neverEndingFuture = new KafkaFutureImpl<>();
         when(describeClusterResult.nodes()).thenReturn(neverEndingFuture);
 
-        //When
+        // When
         volumeSource.run();
 
-        //Then
+        // Then
         final List<VolumeUsageResult> results = capturingVolumeObserver.getActualResults();
         assertVolumeUsageStatus(results, VolumeSourceObservationStatus.SAFETY_TIMEOUT);
     }
 
     @Test
     void shouldProduceFailedObservationWhenDescribeClusterCompletesExceptionally() {
-        //Given
+        // Given
         final KafkaFutureImpl<Collection<Node>> kafkaFuture = new KafkaFutureImpl<>();
         kafkaFuture.completeExceptionally(new RuntimeException("Boom"));
         when(describeClusterResult.nodes()).thenReturn(kafkaFuture);
 
-        //When
+        // When
         volumeSource.run();
 
-        //Then
+        // Then
         final List<VolumeUsageResult> results = capturingVolumeObserver.getActualResults();
         assertVolumeUsageStatus(results, VolumeSourceObservationStatus.DESCRIBE_CLUSTER_ERROR);
     }
 
     @Test
     void shouldProduceFailedObservationWhenDescribeLogDirsFutureCompletesExceptionally() {
-        //Given
+        // Given
         final KafkaFutureImpl<Map<Integer, Map<String, LogDirDescription>>> kafkaFuture = new KafkaFutureImpl<>();
         kafkaFuture.completeExceptionally(new RuntimeException("Boom"));
         when(describeLogDirsResult.allDescriptions()).thenReturn(kafkaFuture);
 
-        //When
+        // When
         volumeSource.run();
 
-        //Then
+        // Then
         final List<VolumeUsageResult> results = capturingVolumeObserver.getActualResults();
         assertVolumeUsageStatus(results, VolumeSourceObservationStatus.DESCRIBE_LOG_DIR_ERROR);
     }
 
     @Test
     void shouldProduceCollectionOfVolumes() {
-        //Given
+        // Given
         givenNode(NODE_ID);
         givenLogDirDescription(NODE_ID, LOG_DIR_1, 50, 10);
 
-        //When
+        // When
         volumeSource.run();
 
-        //Then
+        // Then
         final List<VolumeUsageResult> results = capturingVolumeObserver.getActualResults();
         final VolumeUsageResult onlyResult = assertVolumeUsageStatus(results, VolumeSourceObservationStatus.SUCCESS);
-        assertThat(onlyResult.getVolumeUsages()).containsExactly(new VolumeUsage(NODE_ID_STRING, LOG_DIR_1, 50, 10, Instant.now()));
+        assertThat(onlyResult.getVolumeUsages())
+                .containsExactly(new VolumeUsage(NODE_ID_STRING, LOG_DIR_1, 50, 10, Instant.now()));
     }
 
     @Test
     void shouldCreateConsumedBytesMetricForALogDir() {
-        //Given
+        // Given
         givenNode(NODE_ID);
         givenLogDirDescription(NODE_ID, LOG_DIR_1, 50, 10);
 
-        //When
+        // When
         volumeSource.run();
 
-        //Then
+        // Then
         final SortedMap<MetricName, Metric> volumeSourceMetrics = getMetricGroup(METRICS_SCOPE, METRICS_TYPE);
         assertGaugeMetric(volumeSourceMetrics, "ConsumedBytes", 40L);
     }
 
     @Test
     void shouldTrackEvolutionOfConsumedBytesMetricForALogDir() {
-        //Given
+        // Given
         givenNode(NODE_ID);
         givenLogDirDescription(NODE_ID, LOG_DIR_1, 50, 10);
         volumeSource.run();
 
         givenLogDirDescription(NODE_ID, LOG_DIR_1, 50, 20);
 
-        //When
+        // When
         volumeSource.run();
 
-        //Then
+        // Then
         final SortedMap<MetricName, Metric> volumeSourceMetrics = getMetricGroup(METRICS_SCOPE, METRICS_TYPE);
         assertGaugeMetric(volumeSourceMetrics, "ConsumedBytes", 30L);
     }
 
     @Test
     void shouldTrackEvolutionOfAvailableBytesMetricForALogDir() {
-        //Given
+        // Given
         givenNode(NODE_ID);
         givenLogDirDescription(NODE_ID, LOG_DIR_1, 50, 10);
         volumeSource.run();
 
         givenLogDirDescription(NODE_ID, LOG_DIR_1, 50, 20);
 
-        //When
+        // When
         volumeSource.run();
 
-        //Then
+        // Then
         final SortedMap<MetricName, Metric> volumeSourceMetrics = getMetricGroup(METRICS_SCOPE, METRICS_TYPE);
         assertGaugeMetric(volumeSourceMetrics, "AvailableBytes", 20L);
     }
 
     @Test
     void shouldCreateAvailableBytesMetricForALogDir() {
-        //Given
+        // Given
         givenNode(NODE_ID);
         givenLogDirDescription(NODE_ID, LOG_DIR_1, 50, 10);
 
-        //When
+        // When
         volumeSource.run();
 
-        //Then
+        // Then
         final SortedMap<MetricName, Metric> volumeSourceMetrics = getMetricGroup(METRICS_SCOPE, METRICS_TYPE);
         assertGaugeMetric(volumeSourceMetrics, "AvailableBytes", 10L);
     }
 
     @Test
     void shouldCreateConsumedBytesMetricForEachLogDir() {
-        //Given
+        // Given
         givenNode(NODE_ID);
         givenNode(NODE_2_ID);
         givenLogDirDescription(NODE_ID, LOG_DIR_1, 50, 10);
         givenLogDirDescription(NODE_ID, LOG_DIR_2, 60, 15);
         givenLogDirDescription(NODE_2_ID, "dir3", 40, 1);
 
-        //When
+        // When
         volumeSource.run();
 
-        //Then
+        // Then
         final SortedMap<MetricName, Metric> volumeSourceMetrics = getMetricGroup(METRICS_SCOPE, METRICS_TYPE);
         assertGaugeMetric(volumeSourceMetrics, "ConsumedBytes", buildTagMap(NODE_ID, LOG_DIR_1), 40L);
         assertGaugeMetric(volumeSourceMetrics, "ConsumedBytes", buildTagMap(NODE_ID, LOG_DIR_2), 45L);
@@ -256,17 +256,17 @@ class VolumeSourceTest {
 
     @Test
     void shouldCreateAvailableBytesMetricForEachLogDir() {
-        //Given
+        // Given
         givenNode(NODE_ID);
         givenNode(NODE_2_ID);
         givenLogDirDescription(NODE_ID, LOG_DIR_1, 50, 10);
         givenLogDirDescription(NODE_ID, LOG_DIR_2, 60, 15);
         givenLogDirDescription(NODE_2_ID, "dir3", 40, 1);
 
-        //When
+        // When
         volumeSource.run();
 
-        //Then
+        // Then
         final SortedMap<MetricName, Metric> volumeSourceMetrics = getMetricGroup(METRICS_SCOPE, METRICS_TYPE);
         assertGaugeMetric(volumeSourceMetrics, "AvailableBytes", buildTagMap(NODE_ID, LOG_DIR_1), 10L);
         assertGaugeMetric(volumeSourceMetrics, "AvailableBytes", buildTagMap(NODE_ID, LOG_DIR_2), 15L);
@@ -275,15 +275,15 @@ class VolumeSourceTest {
 
     @Test
     void shouldProduceMultipleVolumesForASingleBrokerIfItHasMultipleLogDirs() {
-        //Given
+        // Given
         givenNode(NODE_ID);
         givenLogDirDescription(NODE_ID, LOG_DIR_1, 50, 10);
         givenLogDirDescription(NODE_ID, LOG_DIR_2, 30, 5);
 
-        //When
+        // When
         volumeSource.run();
 
-        //Then
+        // Then
         final List<VolumeUsageResult> results = capturingVolumeObserver.getActualResults();
         final VolumeUsageResult onlyResult = assertVolumeUsageStatus(results, VolumeSourceObservationStatus.SUCCESS);
         VolumeUsage expected1 = new VolumeUsage(NODE_ID_STRING, LOG_DIR_1, 50, 10, Instant.now());
@@ -293,17 +293,17 @@ class VolumeSourceTest {
 
     @Test
     void shouldProduceMultipleVolumesForMultipleBrokers() {
-        //Given
+        // Given
         givenNode(NODE_ID);
         givenLogDirDescription(NODE_ID, LOG_DIR_1, 50, 10);
 
         givenNode(NODE_2_ID);
         givenLogDirDescription(NODE_2_ID, LOG_DIR_1, 30, 5);
 
-        //When
+        // When
         volumeSource.run();
 
-        //Then
+        // Then
         final List<VolumeUsageResult> results = capturingVolumeObserver.getActualResults();
         final VolumeUsageResult onlyResult = assertVolumeUsageStatus(results, VolumeSourceObservationStatus.SUCCESS);
         VolumeUsage expected1 = new VolumeUsage(NODE_ID_STRING, LOG_DIR_1, 50, 10, Instant.now());
@@ -313,17 +313,17 @@ class VolumeSourceTest {
 
     @Test
     void shouldFilterVolumesWithoutAvailableBytes() {
-        //Given
+        // Given
         givenNode(NODE_ID);
         givenLogDirDescription(NODE_ID, LOG_DIR_1, -1L, -1L);
 
         givenNode(NODE_2_ID);
         givenLogDirDescription(NODE_2_ID, LOG_DIR_1, 30, 5);
 
-        //When
+        // When
         volumeSource.run();
 
-        //Then
+        // Then
         final List<VolumeUsageResult> results = capturingVolumeObserver.getActualResults();
         final VolumeUsageResult onlyResult = assertVolumeUsageStatus(results, VolumeSourceObservationStatus.SUCCESS);
         VolumeUsage expected2 = new VolumeUsage(NODE_2_ID_STRING, LOG_DIR_1, 30, 5, Instant.now());
@@ -332,65 +332,66 @@ class VolumeSourceTest {
 
     @Test
     void shouldProduceEmptyIfDescribeLogDirsReturnsEmptyMaps() {
-        //Given
+        // Given
         givenNode(1);
 
-        //When
+        // When
         volumeSource.run();
 
-        //Then
+        // Then
         final List<VolumeUsageResult> results = capturingVolumeObserver.getActualResults();
-        final VolumeUsageResult onlyInvocation = assertVolumeUsageStatus(results, VolumeSourceObservationStatus.SUCCESS);
+        final VolumeUsageResult onlyInvocation = assertVolumeUsageStatus(results,
+                VolumeSourceObservationStatus.SUCCESS);
         assertThat(onlyInvocation.getVolumeUsages()).isEmpty();
     }
 
     @Test
     void shouldCountEachActiveBrokerInDescribeClusterResponse() {
-        //Given
+        // Given
         givenNode(NODE_ID);
         givenNode(NODE_2_ID);
         givenLogDirDescription(NODE_ID, LOG_DIR_1, 50, 10);
         givenLogDirDescription(NODE_ID, LOG_DIR_2, 60, 15);
         givenLogDirDescription(NODE_2_ID, "dir3", 40, 1);
 
-        //When
+        // When
         volumeSource.run();
 
-        //Then
+        // Then
         final SortedMap<MetricName, Metric> volumeSourceMetrics = getMetricGroup(METRICS_SCOPE, METRICS_TYPE);
         assertGaugeMetric(volumeSourceMetrics, "ActiveBrokers", buildBasicTagMap(), 2L);
     }
 
     @Test
     void shouldCountEachActiveLogDirInDescribeLogDirsResponse() {
-        //Given
+        // Given
         givenNode(NODE_ID);
         givenNode(NODE_2_ID);
         givenLogDirDescription(NODE_ID, LOG_DIR_1, 50, 10);
         givenLogDirDescription(NODE_ID, LOG_DIR_2, 60, 15);
         givenLogDirDescription(NODE_2_ID, "dir3", 40, 1);
 
-        //When
+        // When
         volumeSource.run();
 
-        //Then
+        // Then
         final SortedMap<MetricName, Metric> volumeSourceMetrics = getMetricGroup(METRICS_SCOPE, METRICS_TYPE);
         assertGaugeMetric(volumeSourceMetrics, "ActiveLogDirs", buildBasicTagMap(), 3L);
     }
 
     @Test
     void shouldCountEachValidLogDirInDescribeLogDirsResponse() {
-        //Given
+        // Given
         givenNode(NODE_ID);
         givenNode(NODE_2_ID);
         givenLogDirDescription(NODE_ID, LOG_DIR_1, 50, 10);
         givenLogDirDescription(NODE_ID, LOG_DIR_2, -1, -1);
         givenLogDirDescription(NODE_2_ID, "dir3", 40, 1);
 
-        //When
+        // When
         volumeSource.run();
 
-        //Then
+        // Then
         final SortedMap<MetricName, Metric> volumeSourceMetrics = getMetricGroup(METRICS_SCOPE, METRICS_TYPE);
         assertGaugeMetric(volumeSourceMetrics, "ActiveLogDirs", buildBasicTagMap(), 2L);
     }
@@ -431,7 +432,8 @@ class VolumeSourceTest {
         descriptions.computeIfAbsent(nodeId, HashMap::new).put(logDir, dirDescription);
     }
 
-    private static VolumeUsageResult assertVolumeUsageStatus(List<VolumeUsageResult> results, VolumeSourceObservationStatus expectedStatus) {
+    private static VolumeUsageResult assertVolumeUsageStatus(List<VolumeUsageResult> results,
+            VolumeSourceObservationStatus expectedStatus) {
         assertThat(results).hasSize(1);
         final VolumeUsageResult onlyResult = results.get(0);
         assertThat(onlyResult.getStatus()).isEqualTo(expectedStatus);
